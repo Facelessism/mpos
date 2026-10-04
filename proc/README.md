@@ -8,11 +8,11 @@ MicroPython makes it possible to build capable applications on relatively small 
 
 This framework introduces a lightweight process-management layer for structuring such applications. Instead of treating every asynchronous coroutine as an unmanaged task, application components can be represented as managed processes with explicit identities, lifecycle state, restart behavior, scheduling information, and resource constraints.
 
-The is designed primarily for **resource-constrained, single-core microcontrollers** running MicroPython. These platforms provide low-cost, low-power, compact hardware suitable for distributed embedded deployments while operating within considerably tighter resource limits than conventional computing systems. Their constrained resources and single execution core make lightweight cooperative concurrency, explicit scheduling, and resource-aware process management a practical architectural choice.
+The framework is designed primarily for resource-constrained, single-core microcontrollers running MicroPython. These platforms provide low-cost, low-power, compact hardware suitable for distributed embedded deployments while operating within considerably tighter resource limits than conventional computing systems. Their constrained resources and single execution core make lightweight cooperative concurrency, explicit scheduling, and resource-aware process management a practical architectural choice.
 
-The framework uses MicroPython's cooperative asynchronous execution model rather than threads or multiprocessing. Managed coroutines share the same runtime and memory space, so each process must yield control through asynchronous operations to allow other processes to execute. This keeps the execution model lightweight while allowing multiple independent application components to coexist within the same MCU. The broader architecture is intended to provide more than task scheduling alone. Process management can serve as the foundation for higher-level services, logical process containers, inter-service communication, configuration-driven startup, resource monitoring, fault recovery, watchdog integration, and system supervision.
+The framework uses MicroPython's cooperative asynchronous execution model rather than threads or multiprocessing. Managed coroutines share the same runtime and memory space, so each process must yield control through asynchronous operations to allow other processes to execute. This keeps the execution model lightweight while allowing multiple independent application components to coexist within the same MCU. The broader architecture is intended to provide more than task scheduling alone. Process management can serve as the foundation for higher-level services, logical process containers, inter-processor communication, configuration-driven startup, resource monitoring, fault handling, watchdog integration, and system supervision.
 
-Therefore this aims to provide a practical middle ground between an unstructured collection of asynchronous tasks and a full operating-system process model that would be unnecessarily expensive or unavailable on small microcontrollers.
+Therefore, the framework aims to provide a practical middle ground between an unstructured collection of asynchronous tasks and a full operating-system process model that would be unnecessarily expensive or unavailable on small microcontrollers.
 
 ## Architecture
 
@@ -47,7 +47,7 @@ Therefore this aims to provide a practical middle ground between an unstructured
 
 The current implementation provides the process-management and scheduling foundation through `Process`, `ProcessManager`, and `Scheduler`.
 
-The higher-level architecture extends this foundation toward service management, logical process containers, inter-service communication, resource monitoring, fault recovery, configuration-driven startup, watchdog integration, and system supervision.
+The architecture shown above represents the broader framework toward which the implementation is progressing. Higher-level components extend the process-management foundation toward service management, logical process containers, inter-processor communication, resource monitoring, fault handling, configuration-driven startup, watchdog integration, logging, and system supervision.
 
 Process containers are intended as logical management boundaries rather than operating-system containers or independently isolated processes. All managed components ultimately operate within the same MicroPython runtime and share its available resources.
 
@@ -57,7 +57,7 @@ Process containers are intended as logical management boundaries rather than ope
 
 `Process` represents an application coroutine together with the state required to manage its execution.
 
-A process stores its identity, name, coroutine, creation time, running state, restart count, and configured restart limit. Its execution wrapper is responsible for running the coroutine and handling failures according to the configured restart policy.
+A process stores its identity, name, coroutine, creation time, running state, restart count, and configured restart limit. Its execution wrapper is responsible for running the coroutine and handling failures according to the configured restart limit.
 
 This gives application code an explicit lifecycle boundary around an otherwise ordinary asynchronous coroutine.
 
@@ -115,7 +115,7 @@ Key responsibilities:
 
 The framework uses cooperative scheduling rather than preemptive threads.
 
-A scheduled process is executed through MicroPython's asynchronous runtime, allowing multiple application components to share the same execution core without introducing native-thread or multiprocessing overhead.
+Processes execute through MicroPython's asynchronous runtime, allowing multiple application components to share the same execution core without introducing native-thread or multiprocessing overhead.
 
 Scheduled jobs are ordered using:
 
@@ -171,7 +171,7 @@ Cancellation is handled separately from ordinary failures, allowing intentional 
 
 ## Resource Management
 
-Microcontrollers operate under substantially tighter resource constraints than conventional computing systems. The framework therefore treats resource availability as part of process management rather than assuming that every requested process can always be created.
+The framework treats resource availability as part of process management rather than assuming that every requested process can always be created.
 
 The current process manager provides admission checks for:
 
@@ -184,7 +184,7 @@ The broader architecture can extend this approach to additional resource policie
 
 ## Examples
 
-The framework is intended for embedded applications where multiple independent functions must coexist within a constrained MicroPython runtime.
+The framework is intended for embedded applications where multiple independent functions must coexist within the same MicroPython runtime.
 
 ### IoT Gateway
 
@@ -206,40 +206,16 @@ Sensor acquisition, data aggregation, storage, and periodic transmission can ope
 
 The milestone checklist represents the major implementation stages of the framework.
 
-* [x] Core process management
-
-  * Process abstraction, lifecycle state, identification, cancellation, and restart handling.
-* [x] Resource-aware process management
-
-  * Process-count limits and free-memory admission checks.
-* [x] Time-based scheduling
-
-  * Scheduled and delayed process execution using a heap-based scheduler.
-* [x] Priority and repeated scheduling
-
-  * Priority ordering, repeated jobs, scheduled-job tracking, and scheduler lifecycle control.
-* [ ] Robust scheduler and process-manager integration
-
-  * Reliable coordination between scheduled jobs and process creation, execution, and termination.
-* [ ] Fault recovery and diagnostics
-
-  * Structured failure reporting, restart back-off, failure history, and escalation.
-* [ ] Service management
-
-  * Higher-level service abstraction and lifecycle management.
-* [ ] Logical process containers
-
-  * Grouping and management boundaries for related services.
-* [ ] Inter-service communication
-
-  * Structured communication between managed services and processes.
-* [ ] Configuration-driven startup
-
-  * Declarative service configuration, startup ordering, dependencies, and runtime parameters.
-* [ ] Resource monitoring
-
-  * Continuous memory and resource monitoring beyond process-creation admission checks.
-* [ ] System supervision
-
-  * Centralized logging, watchdog integration, dynamic service management, and system-level supervision.
-
+* [x] Core process management (Process abstraction, lifecycle state, identification, cancellation, and restart handling)
+* [x] Resource-aware process management (Process-count limits and free-memory admission checks)
+* [x] Cooperative scheduling (Asynchronous execution using MicroPython's cooperative concurrency model)
+* [x] Time-based scheduling (Scheduled and delayed execution using a heap-based scheduler)
+* [x] Priority and repeated scheduling (Priority ordering, repeated jobs, scheduled-job tracking, and scheduler lifecycle control)
+* [x] Watchdog management (Hardware watchdog integration and health-aware watchdog servicing)
+* [ ] Fault handling architecture (Structured failure reporting, restart policies, failure history, back-off, retry limits, and escalation)
+* [ ] Inter-processor communication (Communication mechanisms for exchanging data between processors)
+* [ ] Memory monitoring (Continuous memory tracking, thresholds, garbage-collection policies, and resource-state handling)
+* [ ] Dynamic service management (Filesystem-based service loading, controlled service replacement, and resource cleanup)
+* [ ] Configuration-driven startup (Configuration-based service selection, startup ordering, dependencies, and runtime parameters)
+* [ ] Logging and diagnostics (Centralized structured logging, severity levels, timestamps, and diagnostic output)
+* [ ] System supervision (Centralized health monitoring, failure escalation, and overall system coordination)
