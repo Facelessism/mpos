@@ -4,7 +4,7 @@ import asyncio
 import heapq
 import time
 
-from proc import Process, ProcessManager
+from . import Process, ProcessManager
 
 # NOTE: Error Codes
 # DEPRIORITIZED: -1
