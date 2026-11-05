@@ -5,6 +5,8 @@ import gc
 import time
 import micropython
 
+# mypy: disable-error-code=untyped-decorator,name-defined
+
 # NOTE: Implement
 # Preloading methods
 # Pre-allocating memory
@@ -13,6 +15,152 @@ import micropython
 # NOTE: Error codes
 # UNREGISTERED: 0
 # FAILURE: -1
+
+print_lock = asyncio.Lock()
+
+
+async def safe_print(*args: object) -> None:
+    async with print_lock:
+        print(*args)
+
+
+
+class Watchdog:
+    """Monitor registered processes and maintain hardware watchdog health."""
+    @micropython.native
+    def __init__(self, hw_timeout_ms: int = 8000) -> None:
+        """Initialize the hardware and software watchdog.
+        Args:
+            hw_timeout_ms: Hardware watchdog timeout in milliseconds.
+                If the hardware watchdog is not fed within this interval,
+                the device may be reset.
+        Side Effects:
+            Initializes the hardware watchdog and creates an empty
+            heartbeat registry. Sets the watchdog running state to ``False``.
+        """
+        self.wdt = machine.WDT(timeout=hw_timeout_ms)
+        self.beats: dict[int, int] = {}
+        self.running: bool = False
+    @micropython.native
+    def feed_hw(self) -> None:
+        """Feed the hardware watchdog to prevent a device reset.
+        Side Effects:
+            Resets the hardware watchdog countdown.
+        """
+        self.wdt.feed()
+    @micropython.native
+    def beat(self, pid: int) -> None:
+        """Register or update the heartbeat timestamp of a process.
+        Args:
+            pid: Identifier of the process whose heartbeat is being updated.
+
+        Side Effects:
+            Stores the current system tick count against the process ID,
+            marking the process as recently active.
+        """
+        self.beats[pid] = time.ticks_ms()
+
+    @micropython.native
+    def stale(self, pid: int, timeout_ms: int) -> bool:
+        """Check whether a process heartbeat has exceeded its timeout.
+
+        Args:
+            pid: Identifier of the process to check.
+            timeout_ms: Maximum permitted interval between heartbeats,
+                in milliseconds.
+
+        Returns:
+            ``True`` if the process has no registered heartbeat or its
+            last heartbeat exceeds the specified timeout; otherwise
+            ``False``.
+        """
+        last = self.beats.get(pid)
+        if last is None:
+            return True
+        return time.ticks_diff(time.ticks_ms(), last) > timeout_ms
+
+    @micropython.native
+    def remove(self, pid: int) -> None:
+        """Remove a process heartbeat from the watchdog registry.
+
+        Args:
+            pid: Identifier of the process whose heartbeat is to be removed.
+
+        Side Effects:
+            Deletes the process heartbeat entry if it exists.
+        """
+        if pid in self.beats:
+            del self.beats[pid]
+
+    @micropython.native
+    def clear(self) -> None:
+        """Remove all registered process heartbeats.
+
+        Side Effects:
+            Clears the heartbeat registry, removing all tracked process
+            activity timestamps.
+        """
+        self.beats.clear()
+
+    async def run(
+        self, pm: "ProcessManager", timeout_ms: int = 3000, interval_ms: int = 1000
+    ) -> None:
+        """Monitor registered processes and enforce heartbeat timeouts.
+
+        Periodically feeds the hardware watchdog and checks the heartbeat
+        status of registered processes. Processes that are still marked
+        as running but have exceeded the permitted heartbeat timeout are
+        terminated through the process manager.
+
+        Args:
+            pm: Process manager containing the processes to monitor.
+            timeout_ms: Maximum permitted interval between process
+                heartbeats, in milliseconds. Processes exceeding this
+                interval are considered stale.
+            interval_ms: Delay between consecutive monitoring cycles,
+                in milliseconds.
+
+        Side Effects:
+            Sets ``running`` to ``True`` while monitoring is active.
+            Feeds the hardware watchdog during each monitoring cycle.
+            Terminates stale running processes through ``pm.kill()``.
+            Sets ``running`` to ``False`` when monitoring stops or exits.
+
+        Raises:
+            asyncio.CancelledError: If the monitoring task is cancelled.
+                Cancellation is propagated after the running state is reset
+                in the ``finally`` block.
+        """
+        self.running = True
+        try:
+            while self.running:
+                self.feed_hw()
+
+                for pid in list(pm.processes.keys()):
+                    proc = pm.processes.get(pid)
+                    if (
+                        proc is not None
+                        and proc.running
+                        and self.stale(pid, timeout_ms)
+                    ):
+                        _ = await pm.kill(pid)
+
+                await asyncio.sleep_ms(interval_ms)
+        finally:
+            self.running = False
+
+    @micropython.native
+    def stop(self) -> None:
+        """Request termination of the watchdog monitoring loop.
+
+        The monitoring loop exits after the current monitoring cycle
+        completes and control returns to its loop condition.
+
+        Side Effects:
+            Sets ``running`` to ``False``. Does not directly cancel the
+            monitoring task or disable the hardware watchdog.
+        """
+        self.running = False
 
 
 class Process:
@@ -73,7 +221,6 @@ class Process:
                         break
                     self.restart_count = restart_count + 1
                     await asyncio.sleep_ms(0)
-
         finally:
             self.running = False
 
@@ -101,9 +248,7 @@ class ProcessManager:
 
     @micropython.native
     def __init__(
-        self,
-        max_process: int = 5,
-        min_free_memory: int = 2048,
+        self, watchdog: Watchdog, max_process: int = 5, min_free_memory: int = 2048
     ) -> None:
         """Initialize the process manager.
 
@@ -117,6 +262,7 @@ class ProcessManager:
         self.next_id: int = 1
         self.max_process: int = max_process
         self.min_free_memory: int = min_free_memory
+        self.watchdog = watchdog
 
     @micropython.native
     def _can_spawn(self) -> bool:
@@ -144,13 +290,16 @@ class ProcessManager:
         """
         processes = self.processes
         if len(processes) >= self.max_process:
-            return FAILURE
+            return -1
         if gc.mem_free() < self.min_free_memory:
-            return FAILURE
+            return -1
+
         pid = self.next_id
         proc.id = pid
         self.next_id = pid + 1
         processes[pid] = proc
+
+        self.watchdog.beat(pid)
         proc.task = asyncio.create_task(proc.run())
         return pid
 
@@ -171,15 +320,17 @@ class ProcessManager:
         proc = processes.get(pid)
         if proc is None:
             return False
-        task = proc.task
 
+        task = proc.task
         if task is not None and not task.done():
             task.cancel()
             try:
                 await task
             except asyncio.CancelledError:
                 pass
+
         proc.running = False
+        self.watchdog.remove(pid)
         del processes[pid]
         return True
 
@@ -196,15 +347,15 @@ class ProcessManager:
         processes = self.processes
         if not processes:
             return
+
         for proc in processes.values():
             task = proc.task
-
             if task is not None and not task.done():
                 task.cancel()
-        await asyncio.sleep_ms(0)
-        processes.clear()
 
-    # async def status(self) -> None:
-    #     for pid, proc in self.processes.items():
-    #         state = "Running" if proc.running else "IDLE/Done"
-    #         await safe_print(f"ID: {pid}\tNAME: {proc.name}\tState: {state}")
+        await asyncio.sleep_ms(0)
+
+        for pid in list(processes.keys()):
+            self.watchdog.remove(pid)
+
+        processes.clear()
